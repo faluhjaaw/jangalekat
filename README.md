@@ -25,7 +25,9 @@ entièrement supprimée au profit de Firebase.
 4. Ajouter une application **Android** au projet :
    - package name : `com.jangalekat.jangalekat_mobile` (ou le vôtre, mais il
      doit correspondre à `mobile/android/app/build.gradle.kts` → `applicationId`)
-   - téléchargez `google-services.json` et placez-le dans `mobile/android/app/`.
+   - téléchargez `google-services.json` et placez-le dans `mobile/android/app/`
+     (déjà présent et commité dans ce dépôt pour le projet `jangalekat` — à
+     remplacer seulement si vous pointez vers votre propre projet Firebase).
 
 ### Générer `firebase_options.dart`
 
