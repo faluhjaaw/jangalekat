@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Un enseignant authentifie ne peut lire/ecrire que son propre sous-arbre
+// enseignants/{uid}/** (classes, eleves, notes, messages). Rien n'est public.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /enseignants/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+  }
+}

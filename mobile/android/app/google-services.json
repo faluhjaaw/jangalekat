@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "458923365828",
+    "project_id": "jangalekat",
+    "storage_bucket": "jangalekat.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458923365828:android:8c102c3802955f2b0ec091",
+        "android_client_info": {
+          "package_name": "com.jangalekat.jangalekat_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCnT_t2c3lgBY_QivOBoRbgFUqCRdeKmO0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
