@@ -39,12 +39,17 @@ class MessageService {
     return MessageEntry.fromDoc(doc);
   }
 
+  /// Exclut les messages supprimes (suppression douce, voir `softDelete`) :
+  /// filtre cote client, meme raison que dans `ClasseService.list`.
   Future<List<MessageEntry>> historique({int limit = 100}) async {
     final snap = await _messages
         .orderBy('dateEnvoi', descending: true)
         .limit(limit)
         .get();
-    return snap.docs.map(MessageEntry.fromDoc).toList();
+    return snap.docs
+        .where((d) => d.data()['deleted'] != true)
+        .map(MessageEntry.fromDoc)
+        .toList();
   }
 
   /// Filtre cote client plutot qu'une requete `where` + `orderBy` combinee :
@@ -54,4 +59,10 @@ class MessageService {
     final tout = await historique();
     return tout.where((m) => m.eleveId == eleveId).toList();
   }
+
+  /// Suppression douce : marque `deleted: true` au lieu d'effacer le
+  /// document, pour garder une trace des envois meme retires de l'historique
+  /// affiche.
+  Future<void> softDelete(String messageId) =>
+      _messages.doc(messageId).update({'deleted': true});
 }

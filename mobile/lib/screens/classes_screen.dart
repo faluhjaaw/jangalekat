@@ -17,23 +17,40 @@ class ClassesScreen extends StatefulWidget {
 }
 
 class _ClassesScreenState extends State<ClassesScreen> {
-  late Future<List<ClasseSummary>> _future;
+  List<ClasseSummary> _summaries = [];
+  bool _loading = true;
+  bool _error = false;
 
   @override
   void initState() {
     super.initState();
-    _future = context.read<AppState>().loadClasseSummaries();
+    _load();
   }
 
-  Future<void> _reload() async {
-    final f = context.read<AppState>().loadClasseSummaries();
-    setState(() {
-      _future = f;
-    });
-    await f;
+  /// `silent` : ne montre pas le spinner plein ecran, garde les donnees
+  /// affichees pendant le rechargement (utilise au retour d'un ecran pousse,
+  /// pour eviter le flash "page qui recharge" au bouton retour).
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
+    try {
+      final data = await context.read<AppState>().loadClasseSummaries();
+      if (!mounted) return;
+      setState(() {
+        _summaries = data;
+        _loading = false;
+        _error = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = true;
+      });
+    }
   }
 
   Future<void> _openCreateClasse() async {
+    final app = context.read<AppState>();
     final nomCtrl = TextEditingController();
     final niveauCtrl = TextEditingController();
     final created = await showModalBottomSheet<bool>(
@@ -43,153 +60,188 @@ class _ClassesScreenState extends State<ClassesScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 20,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Ajouter une classe',
-              style: AppText.sans(size: 17, weight: FontWeight.w700),
+      builder: (ctx) {
+        String? error;
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) => Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
             ),
-            const SizedBox(height: 16),
-            _SheetField(label: 'Nom', hint: 'CM2 A', controller: nomCtrl),
-            const SizedBox(height: 12),
-            _SheetField(label: 'Niveau', hint: 'CM2', controller: niveauCtrl),
-            const SizedBox(height: 20),
-            PrimaryButton(
-              label: 'Créer la classe',
-              onPressed: () async {
-                if (nomCtrl.text.trim().isEmpty ||
-                    niveauCtrl.text.trim().isEmpty) {
-                  return;
-                }
-                try {
-                  await context.read<AppState>().classeService.create(
-                    nom: nomCtrl.text.trim(),
-                    niveau: niveauCtrl.text.trim(),
-                  );
-                  if (ctx.mounted) Navigator.of(ctx).pop(true);
-                } catch (_) {
-                  if (ctx.mounted) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(
-                      const SnackBar(
-                        content: Text('Impossible de créer la classe'),
-                      ),
-                    );
-                  }
-                }
-              },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  app.tr('classes.sheetTitle'),
+                  style: AppText.sans(size: 17, weight: FontWeight.w700),
+                ),
+                const SizedBox(height: 16),
+                if (error != null) ...[
+                  ErrorBanner(error!),
+                  const SizedBox(height: 12),
+                ],
+                LabeledField(
+                  label: app.tr('classes.name'),
+                  hint: 'CM2 A',
+                  controller: nomCtrl,
+                ),
+                const SizedBox(height: 12),
+                LabeledField(
+                  label: app.tr('classes.level'),
+                  hint: 'CM2',
+                  controller: niveauCtrl,
+                ),
+                const SizedBox(height: 20),
+                PrimaryButton(
+                  label: app.tr('classes.create'),
+                  onPressed: () async {
+                    if (nomCtrl.text.trim().isEmpty ||
+                        niveauCtrl.text.trim().isEmpty) {
+                      setSheetState(
+                        () => error = app.tr('classes.requiredFields'),
+                      );
+                      return;
+                    }
+                    try {
+                      await app.classeService.create(
+                        nom: nomCtrl.text.trim(),
+                        niveau: niveauCtrl.text.trim(),
+                      );
+                      if (ctx.mounted) Navigator.of(ctx).pop(true);
+                    } catch (_) {
+                      if (ctx.mounted) {
+                        setSheetState(
+                          () => error = app.tr('classes.createError'),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
-    if (created == true) _reload();
+    if (created == true) _load(silent: true);
   }
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      color: AppColors.accentGreenText,
-      onRefresh: _reload,
-      child: FutureBuilder<List<ClasseSummary>>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(
-              child: CircularProgressIndicator(
-                color: AppColors.accentGreenText,
-              ),
-            );
-          }
-          final summaries = snapshot.data ?? [];
-          final studentTotal = summaries.fold<int>(
-            0,
-            (a, c) => a + c.studentCount,
-          );
+    final app = context.watch<AppState>();
+    final summaries = _summaries;
+    final studentTotal = summaries.fold<int>(0, (a, c) => a + c.studentCount);
 
-          return ListView(
-            padding: const EdgeInsets.only(bottom: 24),
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Mes classes',
-                      style: AppText.sans(size: 22, weight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${summaries.length} classes · $studentTotal élèves',
-                      style: AppText.sans(size: 13, color: AppColors.textMuted),
-                    ),
-                  ],
+    // Pas de retour tactile (ripple) sur cet ecran, contrairement au reste
+    // de l'app : les cartes de classe ne sont pas concernees par le style
+    // de feedback global demande ailleurs.
+    return Theme(
+      data: Theme.of(context).copyWith(
+        splashFactory: NoSplash.splashFactory,
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  app.tr('classes.title'),
+                  style: AppText.sans(size: 22, weight: FontWeight.w700),
                 ),
-              ),
-              if (snapshot.hasError)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: ErrorBanner('Impossible de charger les classes'),
+                const SizedBox(height: 2),
+                Text(
+                  '${summaries.length} ${app.tr('classes.summaryClasses')} · $studentTotal ${app.tr('classes.summaryStudents')}',
+                  style: AppText.sans(size: 13, color: AppColors.textMuted),
                 ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Column(
-                  children: summaries
-                      .map(
-                        (s) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: _ClasseCard(
-                            summary: s,
-                            onTap: () => Navigator.of(context)
-                                .push(
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        ClassDetailScreen(classe: s.classe),
+              ],
+            ),
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              color: AppColors.accentGreenText,
+              onRefresh: () => _load(silent: true),
+              child: Builder(
+                builder: (context) {
+                  if (_loading && _summaries.isEmpty) {
+                    return Center(
+                      child: CircularProgressIndicator(
+                        color: AppColors.accentGreenText,
+                      ),
+                    );
+                  }
+
+                  return ListView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.only(bottom: 24),
+                    children: [
+                      if (_error)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: ErrorBanner(app.tr('classes.error')),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Column(
+                          children: summaries
+                              .map(
+                                (s) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: _ClasseCard(
+                                    summary: s,
+                                    onTap: () => Navigator.of(context)
+                                        .push(
+                                          MaterialPageRoute(
+                                            builder: (_) => ClassDetailScreen(
+                                              classe: s.classe,
+                                            ),
+                                          ),
+                                        )
+                                        .then((_) => _load(silent: true)),
                                   ),
-                                )
-                                .then((_) => _reload()),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                        child: OutlinedButton(
+                          onPressed: _openCreateClasse,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            side: BorderSide(
+                              color: AppColors.dashedBorder,
+                              width: 1.5,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          child: Text(
+                            app.tr('classes.add'),
+                            style: AppText.sans(
+                              size: 13.5,
+                              weight: FontWeight.w600,
+                              color: AppColors.textMuted,
+                            ),
                           ),
                         ),
-                      )
-                      .toList(),
-                ),
+                      ),
+                    ],
+                  );
+                },
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
-                child: OutlinedButton(
-                  onPressed: _openCreateClasse,
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    side: const BorderSide(
-                      color: AppColors.dashedBorder,
-                      width: 1.5,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  child: Text(
-                    '+ Ajouter une classe',
-                    style: AppText.sans(
-                      size: 13.5,
-                      weight: FontWeight.w600,
-                      color: AppColors.textMuted,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -202,6 +254,7 @@ class _ClasseCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(18),
@@ -213,7 +266,7 @@ class _ClasseCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            InitialsAvatar(initials: summary.classe.nom, size: 46),
+            InitialsAvatar(initials: summary.classe.initiales, size: 46),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -225,7 +278,7 @@ class _ClasseCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${summary.studentCount} élèves',
+                    '${summary.studentCount} ${app.tr('classes.summaryStudents')}',
                     style: AppText.sans(size: 12.5, color: AppColors.textMuted),
                   ),
                 ],
@@ -236,7 +289,7 @@ class _ClasseCard extends StatelessWidget {
               children: [
                 AvgPill(avg: summary.moyenne, fontSize: 14),
                 const SizedBox(height: 6),
-                const Icon(
+                Icon(
                   Icons.chevron_right_rounded,
                   size: 18,
                   color: AppColors.textFaint,
@@ -246,55 +299,6 @@ class _ClasseCard extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _SheetField extends StatelessWidget {
-  final String label;
-  final String hint;
-  final TextEditingController controller;
-  const _SheetField({
-    required this.label,
-    required this.hint,
-    required this.controller,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label.toUpperCase(),
-          style: AppText.sans(
-            size: 11,
-            weight: FontWeight.w600,
-            color: AppColors.textFaint,
-            letterSpacing: 0.6,
-          ),
-        ),
-        const SizedBox(height: 7),
-        Container(
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: TextField(
-            controller: controller,
-            style: AppText.sans(size: 15, weight: FontWeight.w600),
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: AppText.sans(size: 15, color: AppColors.textFaint),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 14,
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

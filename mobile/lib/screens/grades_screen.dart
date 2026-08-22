@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../constants.dart';
 import '../models/classe.dart';
 import '../models/eleve.dart';
 import '../models/matiere.dart';
@@ -25,6 +25,15 @@ class _GradesScreenState extends State<GradesScreen> {
   List<Eleve> _eleves = [];
   final Map<String, Map<String, double?>> _matrix =
       {}; // eleveId -> matiere -> valeur
+  /// Copie des valeurs telles que chargees depuis Firestore, pour ne
+  /// renvoyer en ecriture que ce qui a reellement change (voir `_dirty`).
+  final Map<String, Map<String, double?>> _original = {};
+
+  /// Couples (eleveId, matiere) modifies depuis le dernier chargement/
+  /// enregistrement, toutes matieres confondues (pas seulement l'onglet
+  /// affiche) : `_save` doit persister les notes saisies sur n'importe quel
+  /// onglet, pas uniquement celui actif au moment du clic.
+  final Set<(String, String)> _dirty = {};
   final Map<String, TextEditingController> _controllers = {};
   int _subjectIndex = 0;
   bool _saving = false;
@@ -53,15 +62,16 @@ class _GradesScreenState extends State<GradesScreen> {
       _loading = true;
       _error = null;
     });
+    final app = context.read<AppState>();
     try {
-      final app = context.read<AppState>();
       final eleves = await app.eleveService.listForClasse(widget.classe.id);
+      _matrix.clear();
       await Future.wait(
         eleves.map((e) async {
           final notes = await app.noteService.notesEleve(
             widget.classe.id,
             e.id,
-            kPeriodeActuelle,
+            app.periode,
             _matieres,
           );
           final parMatiere = _matrix.putIfAbsent(e.id, () => {});
@@ -71,9 +81,13 @@ class _GradesScreenState extends State<GradesScreen> {
         }),
       );
       _eleves = eleves;
+      _original
+        ..clear()
+        ..addAll({for (final e in _matrix.entries) e.key: Map.of(e.value)});
+      _dirty.clear();
       _rebuildControllers();
     } catch (_) {
-      _error = 'Impossible de charger les notes';
+      _error = app.tr('grades.loadError');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -128,6 +142,17 @@ class _GradesScreenState extends State<GradesScreen> {
     });
   }
 
+  /// Change de trimestre actif (partage par toute l'app, voir
+  /// `AppState.periode`) puis recharge les notes de cette classe pour le
+  /// nouveau trimestre : chaque trimestre a ses propres notes en base, il
+  /// ne faut jamais melanger celles de deux trimestres a l'ecran.
+  Future<void> _selectPeriode(String value) async {
+    final app = context.read<AppState>();
+    if (value == app.periode) return;
+    await app.setPeriode(value);
+    if (mounted) _load();
+  }
+
   Future<void> _persistMatieres() async {
     try {
       await context.read<AppState>().classeService.updateMatieres(
@@ -137,7 +162,11 @@ class _GradesScreenState extends State<GradesScreen> {
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Échec de la mise à jour des matières')),
+          SnackBar(
+            content: Text(
+              context.read<AppState>().tr('grades.updateMatieresError'),
+            ),
+          ),
         );
       }
     }
@@ -174,6 +203,7 @@ class _GradesScreenState extends State<GradesScreen> {
   }
 
   void _openManageMatieres() {
+    final app = context.read<AppState>();
     final nomCtrl = TextEditingController();
     final coeffCtrl = TextEditingController(text: '1');
     showModalBottomSheet(
@@ -192,12 +222,13 @@ class _GradesScreenState extends State<GradesScreen> {
             bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
           ),
           child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Matières · ${widget.classe.nom}',
+                  '${app.tr('grades.manageTitlePrefix')} · ${widget.classe.nom}',
                   style: AppText.sans(size: 17, weight: FontWeight.w700),
                 ),
                 const SizedBox(height: 14),
@@ -205,7 +236,7 @@ class _GradesScreenState extends State<GradesScreen> {
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Text(
-                      'Aucune matière — ajoutez-en une ci-dessous',
+                      app.tr('grades.noSubjects'),
                       style: AppText.sans(size: 13, color: AppColors.textMuted),
                     ),
                   ),
@@ -234,7 +265,7 @@ class _GradesScreenState extends State<GradesScreen> {
                           ),
                           Text(
                             'coeff ${entry.value.coefficient}',
-                            style: AppText.mono(
+                            style: AppText.sans(
                               size: 12,
                               color: AppColors.textMuted,
                             ),
@@ -244,8 +275,8 @@ class _GradesScreenState extends State<GradesScreen> {
                             onTap: () =>
                                 _removeMatiere(entry.key, sheetSetState),
                             borderRadius: BorderRadius.circular(8),
-                            child: const Padding(
-                              padding: EdgeInsets.all(4),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
                               child: Icon(
                                 Icons.delete_outline_rounded,
                                 size: 19,
@@ -264,8 +295,8 @@ class _GradesScreenState extends State<GradesScreen> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: _SheetMiniField(
-                        label: 'Nouvelle matière',
+                      child: LabeledField(
+                        label: app.tr('grades.newSubject'),
                         hint: 'Musique',
                         controller: nomCtrl,
                       ),
@@ -273,18 +304,18 @@ class _GradesScreenState extends State<GradesScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       flex: 1,
-                      child: _SheetMiniField(
-                        label: 'Coeff',
+                      child: LabeledField(
+                        label: app.tr('grades.coeffLabel'),
                         hint: '1',
                         controller: coeffCtrl,
-                        numeric: true,
+                        keyboardType: TextInputType.number,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
                 PrimaryButton(
-                  label: 'Ajouter',
+                  label: app.tr('classDetail.add'),
                   background: AppColors.card,
                   foreground: AppColors.textDark,
                   onPressed: () {
@@ -309,31 +340,62 @@ class _GradesScreenState extends State<GradesScreen> {
   void _onScoreChanged(Eleve e, String raw) {
     final parsed = double.tryParse(raw.replaceAll(',', '.'));
     final clamped = parsed?.clamp(0.0, 20.0);
-    setState(() => _matrix.putIfAbsent(e.id, () => {})[_matiere.nom] = clamped);
+    final matiere = _matiere.nom;
+    setState(() {
+      _matrix.putIfAbsent(e.id, () => {})[matiere] = clamped;
+      final key = (e.id, matiere);
+      if (clamped == _original[e.id]?[matiere]) {
+        _dirty.remove(key);
+      } else {
+        _dirty.add(key);
+      }
+    });
   }
 
   Future<void> _save() async {
+    if (_dirty.isEmpty) return;
     setState(() => _saving = true);
     try {
       final app = context.read<AppState>();
+      final toSave = _dirty.toList();
       final futures = <Future>[];
-      for (final e in _eleves) {
-        final v = _matrix[e.id]?[_matiere.nom];
-        if (v == null) continue;
+      for (final (eleveId, matiereNom) in toSave) {
+        final v = _matrix[eleveId]?[matiereNom];
+        if (v == null) {
+          futures.add(
+            app.noteService.supprimer(
+              widget.classe.id,
+              eleveId,
+              matiere: matiereNom,
+              periode: app.periode,
+            ),
+          );
+          continue;
+        }
+        final matiere = _matieres.firstWhere(
+          (m) => m.nom == matiereNom,
+          orElse: () => Matiere(matiereNom, 1),
+        );
         futures.add(
           app.noteService.upsert(
             widget.classe.id,
-            e.id,
-            matiere: _matiere.nom,
+            eleveId,
+            matiere: matiereNom,
             valeur: v,
-            coefficient: _matiere.coefficient,
-            periode: kPeriodeActuelle,
+            coefficient: matiere.coefficient,
+            periode: app.periode,
           ),
         );
       }
       await Future.wait(futures);
       if (!mounted) return;
       setState(() {
+        for (final key in toSave) {
+          final (eleveId, matiereNom) = key;
+          _original.putIfAbsent(eleveId, () => {})[matiereNom] =
+              _matrix[eleveId]?[matiereNom];
+          _dirty.remove(key);
+        }
         _saving = false;
         _saved = true;
       });
@@ -344,7 +406,9 @@ class _GradesScreenState extends State<GradesScreen> {
       if (mounted) {
         setState(() => _saving = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Échec de l\'enregistrement')),
+          SnackBar(
+            content: Text(context.read<AppState>().tr('grades.saveError')),
+          ),
         );
       }
     }
@@ -352,6 +416,7 @@ class _GradesScreenState extends State<GradesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -359,10 +424,10 @@ class _GradesScreenState extends State<GradesScreen> {
             ? Column(
                 children: [
                   BackHeader(
-                    title: 'Saisir les notes',
+                    title: app.tr('grades.title'),
                     subtitle: widget.classe.nom,
                   ),
-                  const Expanded(
+                  Expanded(
                     child: Center(
                       child: CircularProgressIndicator(
                         color: AppColors.accentGreenText,
@@ -375,7 +440,7 @@ class _GradesScreenState extends State<GradesScreen> {
             ? Column(
                 children: [
                   BackHeader(
-                    title: 'Saisir les notes',
+                    title: app.tr('grades.title'),
                     subtitle: widget.classe.nom,
                   ),
                   Padding(
@@ -387,7 +452,7 @@ class _GradesScreenState extends State<GradesScreen> {
             : Column(
                 children: [
                   BackHeader(
-                    title: 'Saisir les notes',
+                    title: app.tr('grades.title'),
                     subtitle: widget.classe.nom,
                   ),
                   Padding(
@@ -395,17 +460,57 @@ class _GradesScreenState extends State<GradesScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        SectionLabel(app.tr('period.sectionLabel')),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: kPeriodes
+                              .map(
+                                (p) => Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: InkWell(
+                                    onTap: () => _selectPeriode(p),
+                                    borderRadius: BorderRadius.circular(999),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 15,
+                                        vertical: 9,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: p == app.periode
+                                            ? AppColors.brandDark
+                                            : AppColors.card,
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        app.tr('period.${p.toLowerCase()}'),
+                                        style: AppText.sans(
+                                          size: 12.5,
+                                          weight: FontWeight.w700,
+                                          color: p == app.periode
+                                              ? AppColors.brandGold
+                                              : AppColors.textDark,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                        const SizedBox(height: 16),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const SectionLabel('Matière'),
+                            SectionLabel(app.tr('grades.subject')),
                             InkWell(
                               onTap: _openManageMatieres,
                               borderRadius: BorderRadius.circular(8),
                               child: Row(
                                 children: [
                                   Text(
-                                    'Gérer',
+                                    app.tr('common.manage'),
                                     style: AppText.sans(
                                       size: 12,
                                       weight: FontWeight.w700,
@@ -413,7 +518,7 @@ class _GradesScreenState extends State<GradesScreen> {
                                     ),
                                   ),
                                   const SizedBox(width: 3),
-                                  const Icon(
+                                  Icon(
                                     Icons.tune_rounded,
                                     size: 15,
                                     color: AppColors.accentGreenText,
@@ -428,7 +533,7 @@ class _GradesScreenState extends State<GradesScreen> {
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 8),
                             child: Text(
-                              'Aucune matière pour cette classe — appuyez sur "Gérer" pour en ajouter.',
+                              app.tr('grades.noSubjectsForClass'),
                               style: AppText.sans(
                                 size: 13,
                                 color: AppColors.textMuted,
@@ -439,6 +544,8 @@ class _GradesScreenState extends State<GradesScreen> {
                           SizedBox(
                             height: 40,
                             child: ListView.separated(
+                              keyboardDismissBehavior:
+                                  ScrollViewKeyboardDismissBehavior.onDrag,
                               scrollDirection: Axis.horizontal,
                               itemCount: _matieres.length,
                               separatorBuilder: (_, _) =>
@@ -477,7 +584,7 @@ class _GradesScreenState extends State<GradesScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'Coefficient ${_matiere.coefficient} · $kPeriodeLabel',
+                            '${app.tr('grades.coefficient')} ${_matiere.coefficient} · ${app.periodeLabel}',
                             style: AppText.sans(
                               size: 11.5,
                               color: AppColors.textFaint,
@@ -491,6 +598,8 @@ class _GradesScreenState extends State<GradesScreen> {
                   if (_matieres.isNotEmpty)
                     Expanded(
                       child: ListView.separated(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
                         padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
                         itemCount: _eleves.length,
                         separatorBuilder: (_, _) => const SizedBox(height: 8),
@@ -526,7 +635,7 @@ class _GradesScreenState extends State<GradesScreen> {
                                         TextSpan(
                                           children: [
                                             TextSpan(
-                                              text: 'Moyenne : ',
+                                              text: app.tr('grades.average'),
                                               style: AppText.sans(
                                                 size: 11,
                                                 color: AppColors.textMuted,
@@ -536,7 +645,7 @@ class _GradesScreenState extends State<GradesScreen> {
                                               text: moyenne == null
                                                   ? '—'
                                                   : moyenne.toStringAsFixed(1),
-                                              style: AppText.mono(
+                                              style: AppText.sans(
                                                 size: 11,
                                                 weight: FontWeight.w700,
                                                 color: moyenne == null
@@ -560,8 +669,9 @@ class _GradesScreenState extends State<GradesScreen> {
                                         const TextInputType.numberWithOptions(
                                           decimal: true,
                                         ),
+                                    inputFormatters: [_MaxScoreFormatter()],
                                     textAlign: TextAlign.center,
-                                    style: AppText.mono(
+                                    style: AppText.sans(
                                       size: 14,
                                       weight: FontWeight.w700,
                                     ),
@@ -576,7 +686,7 @@ class _GradesScreenState extends State<GradesScreen> {
                                           ),
                                       border: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(10),
-                                        borderSide: const BorderSide(
+                                        borderSide: BorderSide(
                                           color: AppColors.cardBorder,
                                           width: 1.5,
                                         ),
@@ -593,7 +703,7 @@ class _GradesScreenState extends State<GradesScreen> {
                   if (_matieres.isNotEmpty)
                     Container(
                       padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         color: AppColors.background,
                         border: Border(
                           top: BorderSide(color: AppColors.cardBorder),
@@ -605,7 +715,7 @@ class _GradesScreenState extends State<GradesScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                'Moyenne classe · ${_matiere.nom}',
+                                '${app.tr('grades.classAverage')}${_matiere.nom}',
                                 style: AppText.sans(
                                   size: 12.5,
                                   color: AppColors.textMuted,
@@ -615,7 +725,7 @@ class _GradesScreenState extends State<GradesScreen> {
                                 _moyenneClasseMatiere == null
                                     ? '—/20'
                                     : '${_moyenneClasseMatiere!.toStringAsFixed(1)}/20',
-                                style: AppText.mono(
+                                style: AppText.sans(
                                   size: 16,
                                   weight: FontWeight.w700,
                                   color: AppColors.accentGreenText,
@@ -626,14 +736,14 @@ class _GradesScreenState extends State<GradesScreen> {
                           const SizedBox(height: 10),
                           PrimaryButton(
                             label: _saving
-                                ? 'Enregistrement...'
+                                ? app.tr('grades.saving')
                                 : (_saved
-                                      ? 'Notes enregistrées ✓'
-                                      : 'Enregistrer'),
+                                      ? app.tr('grades.saved')
+                                      : app.tr('grades.save')),
                             background: _saved
                                 ? AppColors.accentGreenSoft
                                 : AppColors.accentGreen,
-                            onPressed: _saving ? null : _save,
+                            onPressed: _saving || _dirty.isEmpty ? null : _save,
                           ),
                         ],
                       ),
@@ -645,54 +755,17 @@ class _GradesScreenState extends State<GradesScreen> {
   }
 }
 
-class _SheetMiniField extends StatelessWidget {
-  final String label;
-  final String hint;
-  final TextEditingController controller;
-  final bool numeric;
-  const _SheetMiniField({
-    required this.label,
-    required this.hint,
-    required this.controller,
-    this.numeric = false,
-  });
-
+/// Empeche de saisir une note superieure a 20 : rejette la modification si le
+/// texte resultant se parse en un nombre > 20 (accepte '' et les saisies en
+/// cours comme '1' ou '19,' qui ne parsent pas encore en nombre valide).
+class _MaxScoreFormatter extends TextInputFormatter {
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label.toUpperCase(),
-          style: AppText.sans(
-            size: 11,
-            weight: FontWeight.w600,
-            color: AppColors.textFaint,
-            letterSpacing: 0.6,
-          ),
-        ),
-        const SizedBox(height: 7),
-        Container(
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: TextField(
-            controller: controller,
-            keyboardType: numeric ? TextInputType.number : TextInputType.text,
-            style: AppText.sans(size: 15, weight: FontWeight.w600),
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: AppText.sans(size: 15, color: AppColors.textFaint),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 14,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final value = double.tryParse(newValue.text.replaceAll(',', '.'));
+    if (value != null && value > 20) return oldValue;
+    return newValue;
   }
 }

@@ -5,6 +5,8 @@ pondérée par coefficient) et envoi des résultats aux parents via WhatsApp.
 
 - `mobile/` — application Flutter (Android prioritaire), Firebase Auth + Cloud
   Firestore, aucun backend serveur.
+- `admin/` — back office web (React + Vite), gestion des enseignants et
+  suivi des messages/statistiques, même projet Firebase (voir `admin/README.md`).
 - `design/` — maquettes Claude Design (référence visuelle).
 
 Architecture volontairement simple côté mobile : `models/`, `screens/`,
@@ -19,7 +21,9 @@ entièrement supprimée au profit de Firebase.
 
 1. [console.firebase.google.com](https://console.firebase.google.com) → **Ajouter un projet** (ex. `jangalekat-app`).
 2. **Authentication** → Sign-in method → activer **E-mail/Mot de passe**.
-   (voir plus bas *"Pourquoi email/mot de passe et pas l'auth téléphone Firebase"*.)
+   L'email saisi par l'enseignant est son identifiant réel (envoi d'un email
+   de vérification à l'inscription, réinitialisation du PIN par email —
+   voir §4 "Premier lancement").
 3. **Firestore Database** → créer une base, mode production (les règles du
    dépôt remplacent les règles par défaut, voir §3).
 4. Ajouter une application **Android** au projet :
@@ -66,7 +70,7 @@ firebase deploy --only firestore:rules
 
 ```
 enseignants/{uid}
-  nom, telephone, ecole?
+  nom, email, ecole?, telephone?
 
 enseignants/{uid}/classes/{classeId}
   nom, niveau, effectif        # effectif tenu a jour via FieldValue.increment
@@ -107,18 +111,18 @@ du réseau.
 L'écran de connexion ne crée pas de compte : utilisez le lien « Créer un
 compte enseignant » (ajout pragmatique hors maquette, nécessaire pour
 s'inscrire avant la première connexion) pour créer un enseignant, puis
-connectez-vous avec le téléphone + PIN choisis.
+connectez-vous avec l'email + PIN choisis. Un email de vérification est
+envoyé automatiquement à l'inscription (lien Firebase natif, pas de backend) ;
+tant qu'il n'est pas cliqué, une bannière incitative s'affiche sur le tableau
+de bord mais n'empêche pas d'utiliser l'app. « Code oublié ? » sur l'écran de
+connexion envoie un vrai email de réinitialisation du PIN.
 
-## 5. Fiches de cours (Grok / xAI)
+## 5. Fiches de cours (Gemini)
 
-La génération de fiches de cours (onglet "Fiches") appelle l'API Grok (xAI).
+La génération de fiches de cours (onglet "Fiches") appelle l'API Gemini
+(Google AI Studio).
 
-### Obtenir une clé API xAI
-
-1. [console.x.ai](https://console.x.ai) → se connecter / créer un compte.
-2. **API Keys** → créer une nouvelle clé.
-3. L'équipe doit avoir des crédits/une licence actifs (sinon l'API répond
-   `403 permission-denied`) : voir **Billing** dans la console x.ai.
+### Obtenir une clé API Gemini
 
 ### Où la placer
 
@@ -130,27 +134,27 @@ cp .env.example .env
 Puis éditez `mobile/.env` :
 
 ```
-XAI_API_KEY=xai-votre-cle-ici
-# optionnel, sinon grok-4 par defaut :
-# GROK_MODEL=grok-4
+GEMINI_API_KEY=votre-cle-ici
+# optionnel, sinon gemini-2.5-flash par defaut :
+# GEMINI_MODEL=gemini-2.5-flash
 ```
-
-**⚠️ Ne committez jamais `.env`** — il est dans `.gitignore`, seul
-`.env.example` (vide) est versionné. Si `.env` est absent ou que la clé est
-vide, l'app démarre quand même : l'écran "Fiches" affiche juste une erreur
-claire ("Clé API xAI manquante") au lieu de planter.
 
 ## Choix et limites assumés
 
-- **Pourquoi email/mot de passe et pas l'auth téléphone Firebase** :
-  l'authentification téléphone de Firebase envoie un code OTP par SMS à
-  chaque connexion — ça ne correspond pas à la maquette, qui montre un code
-  PIN mémorisé une fois pour toutes. On simule donc le flux de la maquette
-  avec l'auth email/mot de passe de Firebase : le téléphone saisi est converti
-  en identifiant email synthétique (`<chiffres>@jangalekat.app`, jamais vu par
-  l'enseignant) et le PIN sert de mot de passe. Conséquence : **le PIN doit
-  faire 6 chiffres minimum** (contrainte Firebase), pas 4 comme illustré dans
-  la maquette d'origine.
+- **Auth email + PIN** : l'email saisi à l'inscription est l'identifiant réel
+  du compte Firebase Auth (email/mot de passe), le PIN sert de mot de passe.
+  Ça permet la vérification d'email et la réinitialisation du PIN nativement
+  via Firebase (`sendEmailVerification`, `sendPasswordResetEmail`), sans
+  backend. Conséquence : **le PIN doit faire 6 chiffres minimum** (contrainte
+  Firebase), pas 4 comme illustré dans la maquette d'origine. Le téléphone
+  reste un champ de profil optionnel (contact), plus utilisé pour la
+  connexion.
+- **Vérification d'email = incitative, pas bloquante** : un compte non
+  vérifié a un accès complet à l'app (aucune règle Firestore ni check client
+  ne conditionne quoi que ce soit à `emailVerified`). La bannière sur le
+  tableau de bord est un nudge, pas un gate — choix assumé pour ne pas
+  bloquer un enseignant en zone de faible connectivité qui n'a pas encore pu
+  consulter sa boîte mail.
 - **wa.me ne permet pas un vrai envoi groupé** : un lien `wa.me` n'ouvre qu'une
   seule conversation WhatsApp à la fois. L'écran "Envoyer aux parents" en mode
   groupé fait donc avancer l'enseignant destinataire par destinataire (bouton

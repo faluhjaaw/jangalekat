@@ -12,9 +12,17 @@ class ClasseService {
   CollectionReference<Map<String, dynamic>> get _classes =>
       _db.collection('enseignants').doc(uid).collection('classes');
 
+  /// Exclut les classes supprimees (suppression douce, voir `softDelete`) :
+  /// on filtre cote client plutot qu'avec une clause `where` pour ne pas
+  /// exiger que toutes les classes existantes aient deja le champ `deleted`
+  /// (les classes creees avant l'ajout de cette fonctionnalite n'en ont
+  /// pas, elles doivent quand meme apparaitre).
   Future<List<Classe>> list() async {
     final snap = await _classes.orderBy('nom').get();
-    return snap.docs.map(Classe.fromDoc).toList();
+    return snap.docs
+        .where((d) => d.data()['deleted'] != true)
+        .map(Classe.fromDoc)
+        .toList();
   }
 
   Future<Classe> create({required String nom, required String niveau}) async {
@@ -36,7 +44,11 @@ class ClasseService {
     return _classes.doc(classeId).update({'nom': nom, 'niveau': niveau});
   }
 
-  Future<void> delete(String classeId) => _classes.doc(classeId).delete();
+  /// Suppression douce : marque `deleted: true` au lieu d'effacer le
+  /// document. Les eleves/notes de la classe restent en base (pas de
+  /// suppression en cascade), la classe disparait juste des listes.
+  Future<void> softDelete(String classeId) =>
+      _classes.doc(classeId).update({'deleted': true});
 
   /// Maj atomique du compteur d'effectif (evite de recompter la sous-collection
   /// a chaque fois qu'on affiche la liste des classes).

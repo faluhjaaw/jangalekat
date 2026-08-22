@@ -15,12 +15,17 @@ ThemeData buildAppTheme() {
   );
   return base.copyWith(
     textTheme: GoogleFonts.dmSansTextTheme(base.textTheme),
-    appBarTheme: const AppBarTheme(
+    appBarTheme: AppBarTheme(
       backgroundColor: AppColors.background,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       foregroundColor: AppColors.textDark,
     ),
-    splashFactory: NoSplash.splashFactory,
+    // Feedback tactile sur tous les boutons/InkWell de l'app (auparavant
+    // desactive via NoSplash, aucun retour visuel au clic). Teinte l'effet
+    // avec la couleur d'accent de la marque plutot que le bleu Android par
+    // defaut.
+    splashColor: AppColors.accentGreenText.withValues(alpha: 0.12),
+    highlightColor: AppColors.accentGreenText.withValues(alpha: 0.06),
   );
 }

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
@@ -14,8 +17,9 @@ class AppBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppColors.background,
         border: Border(top: BorderSide(color: AppColors.cardBorder)),
       ),
@@ -26,25 +30,25 @@ class AppBottomNav extends StatelessWidget {
           children: [
             _NavItem(
               icon: Icons.home_rounded,
-              label: 'Accueil',
+              label: app.tr('nav.home'),
               active: currentIndex == 0,
               onTap: () => onTap(0),
             ),
             _NavItem(
               icon: Icons.groups_rounded,
-              label: 'Classes',
+              label: app.tr('nav.classes'),
               active: currentIndex == 1,
               onTap: () => onTap(1),
             ),
             _NavItem(
               icon: Icons.history_rounded,
-              label: 'Historique',
+              label: app.tr('nav.history'),
               active: currentIndex == 2,
               onTap: () => onTap(2),
             ),
             _NavItem(
               icon: Icons.auto_stories_rounded,
-              label: 'Fiches',
+              label: app.tr('nav.fiches'),
               active: currentIndex == 3,
               onTap: () => onTap(3),
             ),

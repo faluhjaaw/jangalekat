@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../constants.dart';
 import '../models/classe.dart';
+import '../models/classe_summary.dart';
 import '../models/eleve.dart';
 import '../models/message_models.dart';
 import '../services/note_service.dart';
@@ -29,12 +29,20 @@ class WhatsappScreen extends StatefulWidget {
   final Eleve? initialStudent;
   final TypeMessage initialTemplate;
 
+  /// Quand fourni avec plus d'une classe, affiche un selecteur de classe
+  /// au-dessus du choix Individuel/Groupe (ex. action rapide "Envoyer aux
+  /// parents" du tableau de bord, qui n'est pas liee a une classe precise).
+  /// `null`/liste a un seul element : pas de selecteur, comportement
+  /// inchange (ex. depuis la fiche d'un eleve, deja scopee a sa classe).
+  final List<ClasseSummary>? allClasses;
+
   const WhatsappScreen({
     super.key,
     required this.classe,
     required this.eleves,
     this.initialStudent,
     this.initialTemplate = TypeMessage.felicitations,
+    this.allClasses,
   });
 
   @override
@@ -42,6 +50,8 @@ class WhatsappScreen extends StatefulWidget {
 }
 
 class _WhatsappScreenState extends State<WhatsappScreen> {
+  late Classe _classe;
+  late List<Eleve> _eleves;
   late _Mode _mode;
   late TypeMessage _template;
   late Eleve _selectedStudent;
@@ -56,10 +66,25 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
   @override
   void initState() {
     super.initState();
+    _classe = widget.classe;
+    _eleves = widget.eleves;
     _mode = _Mode.individuel;
     _template = widget.initialTemplate;
-    _selectedStudent = widget.initialStudent ?? widget.eleves.first;
-    _selectedParentIds = widget.eleves.map((e) => e.id).toSet();
+    _selectedStudent = widget.initialStudent ?? _eleves.first;
+    _selectedParentIds = _eleves.map((e) => e.id).toSet();
+    _generateText();
+  }
+
+  void _selectClasse(Classe c) {
+    final summary = widget.allClasses!.firstWhere((s) => s.classe.id == c.id);
+    setState(() {
+      _classe = summary.classe;
+      _eleves = summary.eleves;
+      _selectedStudent = _eleves.isEmpty ? _selectedStudent : _eleves.first;
+      _selectedParentIds = _eleves.map((e) => e.id).toSet();
+      _groupSentCount = 0;
+      _sent = false;
+    });
     _generateText();
   }
 
@@ -78,9 +103,11 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
     final enseignantNom = app.enseignant?.nom ?? '';
     final ecole = app.enseignant?.ecole ?? '';
 
+    final periodeLabel = app.periodeLabelFr;
+
     if (_mode == _Mode.groupe) {
       _messageCtrl.text =
-          'Bonjour, voici les résultats du $kPeriodeLabel pour la classe de ${widget.classe.nom}. — $enseignantNom.';
+          'Bonjour, voici les résultats du $periodeLabel pour la classe de ${_classe.nom}. — $enseignantNom.';
       setState(() {});
       return;
     }
@@ -88,25 +115,25 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
     double? moyenne;
     try {
       final notes = await app.noteService.notesEleve(
-        widget.classe.id,
+        _classe.id,
         _selectedStudent.id,
-        kPeriodeActuelle,
-        widget.classe.matieres,
+        app.periode,
+        _classe.matieres,
       );
       moyenne = NoteService.moyennePonderee(notes);
     } catch (_) {
       moyenne = null;
     }
     final moyenneTxt = moyenne == null ? 'N/A' : moyenne.toStringAsFixed(1);
-    final prenom = _selectedStudent.prenom;
+    final nomComplet = _selectedStudent.nomComplet;
 
     final text = switch (_template) {
       TypeMessage.felicitations =>
-        'Bonjour, je vous informe que $prenom a obtenu une moyenne de $moyenneTxt/20 ce $kPeriodeLabel. Félicitations pour ce travail sérieux ! — $enseignantNom, $ecole.',
+        'Bonjour, je vous informe que $nomComplet a obtenu une moyenne de $moyenneTxt/20 ce $periodeLabel. Félicitations pour ce travail sérieux ! — $enseignantNom, $ecole.',
       TypeMessage.convocation =>
-        'Bonjour, je souhaiterais échanger avec vous au sujet des résultats de $prenom. Merci de passer à l\'école quand vous pourrez. — $enseignantNom.',
+        'Bonjour, je souhaiterais échanger avec vous au sujet des résultats de $nomComplet. Merci de passer à l\'école quand vous pourrez. — $enseignantNom.',
       TypeMessage.alerte =>
-        'Bonjour, la moyenne de $prenom est de $moyenneTxt/20 ce $kPeriodeLabel, en dessous du seuil de réussite. Restons en contact pour l\'accompagner. — $enseignantNom.',
+        'Bonjour, la moyenne de $nomComplet est de $moyenneTxt/20 ce $periodeLabel, en dessous du seuil de réussite. Restons en contact pour l\'accompagner. — $enseignantNom.',
       _ => '',
     };
     if (!mounted) return;
@@ -134,7 +161,7 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
   }
 
   List<Eleve> get _groupTargets =>
-      widget.eleves.where((e) => _selectedParentIds.contains(e.id)).toList();
+      _eleves.where((e) => _selectedParentIds.contains(e.id)).toList();
 
   Future<void> _sendTo(Eleve eleve) async {
     final app = context.read<AppState>();
@@ -146,8 +173,8 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
     await app.messageService.enregistrer(
       eleveId: eleve.id,
       eleveNom: eleve.nomComplet,
-      classeId: widget.classe.id,
-      classeNom: widget.classe.nom,
+      classeId: _classe.id,
+      classeNom: _classe.nom,
       contenu: texte,
       type: _mode == _Mode.groupe ? TypeMessage.groupe : _template,
       statut: ouvert ? StatutMessage.envoye : StatutMessage.echec,
@@ -186,50 +213,90 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
       if (!mounted) return;
       setState(() {
         _sending = false;
-        _error = 'Impossible d\'ouvrir WhatsApp';
+        _error = context.read<AppState>().tr('whatsapp.openError');
       });
     }
+  }
+
+  /// Passe au destinataire suivant sans reessayer l'envoi : utilise quand
+  /// l'echec est du au destinataire lui-meme (numero invalide, WhatsApp non
+  /// installe...) et que reessayer ne changerait rien. L'echec reste
+  /// journalise (voir `_sendTo`), seul le blocage de la file est leve.
+  void _skipCurrent() {
+    setState(() {
+      _error = null;
+      _groupSentCount++;
+      if (_groupSentCount >= _groupTargets.length) _sent = true;
+    });
   }
 
   int get _sendCount =>
       _mode == _Mode.individuel ? 1 : _selectedParentIds.length;
 
-  String get _sendLabel {
-    if (_sending) return 'Envoi...';
+  String _sendLabel(AppState app) {
+    if (_sending) return app.tr('whatsapp.sending');
     if (_mode == _Mode.individuel) {
-      return _sent ? 'Envoyé' : 'Envoyer via WhatsApp';
+      return _sent ? app.tr('whatsapp.sent') : app.tr('whatsapp.sendButton');
     }
     final targets = _groupTargets;
-    if (targets.isEmpty) return 'Envoyer via WhatsApp';
-    if (_sent) return 'Envoyé (${targets.length}/${targets.length})';
+    if (targets.isEmpty) return app.tr('whatsapp.sendButton');
+    if (_sent) {
+      return '${app.tr('whatsapp.sent')} (${targets.length}/${targets.length})';
+    }
     if (_groupSentCount == 0) {
-      return 'Envoyer via WhatsApp — ${targets.length} messages';
+      return '${app.tr('whatsapp.sendButton')} — ${targets.length} ${app.tr('whatsapp.messagesSuffix')}';
     }
     final suivant = targets[_groupSentCount];
-    return 'Suivant : ${suivant.prenom} ($_groupSentCount/${targets.length})';
+    return '${app.tr('whatsapp.next')} : ${suivant.prenom} ($_groupSentCount/${targets.length})';
   }
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: Column(
           children: [
-            const BackHeader(title: 'Envoyer aux parents'),
+            BackHeader(title: app.tr('whatsapp.title')),
             Expanded(
               child: ListView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
                 children: [
                   if (_error != null) ...[
                     ErrorBanner(_error!),
+                    if (_mode == _Mode.groupe &&
+                        _groupSentCount < _groupTargets.length) ...[
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: _skipCurrent,
+                        child: Text(
+                          app.tr('whatsapp.skip'),
+                          style: AppText.sans(
+                            size: 12.5,
+                            weight: FontWeight.w700,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                  ],
+                  if ((widget.allClasses?.length ?? 0) > 1) ...[
+                    _ClassePicker(
+                      classes: widget.allClasses!,
+                      selected: _classe,
+                      onSelect: _selectClasse,
+                    ),
                     const SizedBox(height: 14),
                   ],
                   Row(
                     children: [
                       Expanded(
                         child: _ModeButton(
-                          label: 'Individuel',
+                          label: app.tr('whatsapp.individual'),
                           active: _mode == _Mode.individuel,
                           onTap: () => _setMode(_Mode.individuel),
                         ),
@@ -237,7 +304,7 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: _ModeButton(
-                          label: 'Groupé',
+                          label: app.tr('whatsapp.group'),
                           active: _mode == _Mode.groupe,
                           onTap: () => _setMode(_Mode.groupe),
                         ),
@@ -247,7 +314,7 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
                   const SizedBox(height: 14),
                   if (_mode == _Mode.individuel)
                     _IndividualPicker(
-                      eleves: widget.eleves,
+                      eleves: _eleves,
                       selected: _selectedStudent,
                       onSelect: (e) {
                         setState(() => _selectedStudent = e);
@@ -256,40 +323,40 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
                     )
                   else
                     _GroupPicker(
-                      eleves: widget.eleves,
+                      eleves: _eleves,
                       selectedIds: _selectedParentIds,
                       onToggle: _toggleParent,
                     ),
                   const SizedBox(height: 14),
-                  const SectionLabel('Message type'),
+                  SectionLabel(app.tr('whatsapp.messageType')),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
                       _TemplateChip(
-                        label: 'Félicitations',
+                        label: app.tr('whatsapp.templateCongrats'),
                         active: _template == TypeMessage.felicitations,
                         activeBg: AppColors.accentGreenBgStrong,
                         fg: AppColors.accentGreenText,
                         onTap: () => _selectTemplate(TypeMessage.felicitations),
                       ),
                       _TemplateChip(
-                        label: 'Convocation',
+                        label: app.tr('whatsapp.templateSummon'),
                         active: _template == TypeMessage.convocation,
                         activeBg: AppColors.accentGreenBgStrong,
                         fg: AppColors.textDark,
                         onTap: () => _selectTemplate(TypeMessage.convocation),
                       ),
                       _TemplateChip(
-                        label: 'Alerte baisse',
+                        label: app.tr('whatsapp.templateAlert'),
                         active: _template == TypeMessage.alerte,
                         activeBg: AppColors.warningBg,
                         fg: AppColors.warningText,
                         onTap: () => _selectTemplate(TypeMessage.alerte),
                       ),
                       _TemplateChip(
-                        label: 'Personnalisé',
+                        label: app.tr('whatsapp.templateCustom'),
                         active: _template == TypeMessage.personnalise,
                         activeBg: AppColors.accentGreenBgStrong,
                         fg: AppColors.textDark,
@@ -298,11 +365,11 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  const SectionLabel('Aperçu WhatsApp'),
+                  SectionLabel(app.tr('whatsapp.preview')),
                   const SizedBox(height: 8),
                   Container(
                     padding: const EdgeInsets.all(14),
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       color: AppColors.accentGreenBgStrong,
                       borderRadius: BorderRadius.only(
                         topLeft: Radius.circular(4),
@@ -327,12 +394,12 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
             ),
             Container(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: AppColors.background,
                 border: Border(top: BorderSide(color: AppColors.cardBorder)),
               ),
               child: PrimaryButton(
-                label: _sendLabel,
+                label: _sendLabel(app),
                 background: _sent
                     ? AppColors.accentGreenSoft
                     : AppColors.accentGreen,
@@ -348,6 +415,79 @@ class _WhatsappScreenState extends State<WhatsappScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Selecteur de classe : ne s'affiche que si l'enseignant a plus d'une
+/// classe et que l'ecran n'est pas deja scope a une classe precise (voir
+/// `WhatsappScreen.allClasses`). Meme habillage que `_IndividualPicker`
+/// (avatar + nom/sous-titre + puce menu) pour rester coherent visuellement.
+class _ClassePicker extends StatelessWidget {
+  final List<ClasseSummary> classes;
+  final Classe selected;
+  final ValueChanged<Classe> onSelect;
+  const _ClassePicker({
+    required this.classes,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final selectedSummary = classes.firstWhere(
+      (s) => s.classe.id == selected.id,
+      orElse: () => classes.first,
+    );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          InitialsAvatar(initials: selected.initiales, size: 38),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  selected.nom,
+                  style: AppText.sans(size: 14, weight: FontWeight.w700),
+                ),
+                Text(
+                  '${selectedSummary.studentCount} ${app.tr('classes.summaryStudents')}',
+                  style: AppText.sans(
+                    size: 12,
+                    weight: FontWeight.w600,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (classes.length > 1)
+            PopupMenuButton<Classe>(
+              icon: Icon(
+                Icons.unfold_more_rounded,
+                size: 18,
+                color: AppColors.textFaint,
+              ),
+              onSelected: onSelect,
+              itemBuilder: (context) => classes
+                  .map(
+                    (s) => PopupMenuItem(
+                      value: s.classe,
+                      child: Text(s.classe.nom),
+                    ),
+                  )
+                  .toList(),
+            ),
+        ],
       ),
     );
   }
@@ -420,14 +560,18 @@ class _IndividualPicker extends StatelessWidget {
                 ),
                 Text(
                   selected.telephoneParent,
-                  style: AppText.mono(size: 12, color: AppColors.textMuted),
+                  style: AppText.sans(
+                    size: 12,
+                    weight: FontWeight.w600,
+                    color: AppColors.textMuted,
+                  ),
                 ),
               ],
             ),
           ),
           if (eleves.length > 1)
             PopupMenuButton<Eleve>(
-              icon: const Icon(
+              icon: Icon(
                 Icons.unfold_more_rounded,
                 size: 18,
                 color: AppColors.textFaint,
@@ -457,15 +601,16 @@ class _GroupPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const SectionLabel('Destinataires'),
+            SectionLabel(app.tr('whatsapp.recipients')),
             Text(
-              '${selectedIds.length}/${eleves.length} sélectionnés',
+              '${selectedIds.length}/${eleves.length} ${app.tr('whatsapp.selected')}',
               style: AppText.sans(size: 12, color: AppColors.textMuted),
             ),
           ],
@@ -474,6 +619,7 @@ class _GroupPicker extends StatelessWidget {
         ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 220),
           child: ListView.separated(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             shrinkWrap: true,
             itemCount: eleves.length,
             separatorBuilder: (_, _) => const SizedBox(height: 6),

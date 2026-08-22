@@ -9,26 +9,27 @@ import '../models/fiche_contenu.dart';
 /// Erreur volontairement typee (et non une Exception generique) pour que les
 /// ecrans puissent afficher directement `e.message` a l'enseignant sans
 /// avoir a interpreter un code HTTP ou une exception reseau.
-class GrokException implements Exception {
+class GeminiException implements Exception {
   final String message;
-  GrokException(this.message);
+  GeminiException(this.message);
   @override
   String toString() => message;
 }
 
-/// Appelle l'API Grok (xAI) pour generer une fiche de cours structuree.
-/// Compatible format OpenAI : `POST /v1/chat/completions` avec `messages`.
-class GrokService {
-  static const _endpoint = 'https://api.x.ai/v1/chat/completions';
+/// Appelle l'API Gemini (Google AI Studio) pour generer une fiche de cours
+/// structuree. `POST /v1beta/models/{model}:generateContent`.
+class GeminiService {
+  static const _baseUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models';
   static const _timeout = Duration(seconds: 45);
 
-  String get _apiKey => dotenv.env['XAI_API_KEY'] ?? '';
+  String get _apiKey => dotenv.env['GEMINI_API_KEY'] ?? '';
 
-  /// Modele configurable via .env (GROK_MODEL), sinon un modele Grok recent
-  /// par defaut.
-  String get _model => dotenv.env['GROK_MODEL']?.trim().isNotEmpty == true
-      ? dotenv.env['GROK_MODEL']!.trim()
-      : 'grok-4';
+  /// Modele configurable via .env (GEMINI_MODEL), sinon un modele Gemini
+  /// recent par defaut.
+  String get _model => dotenv.env['GEMINI_MODEL']?.trim().isNotEmpty == true
+      ? dotenv.env['GEMINI_MODEL']!.trim()
+      : 'gemini-2.5-flash';
 
   bool get isConfigured => _apiKey.isNotEmpty;
 
@@ -41,8 +42,8 @@ class GrokService {
     required String langue,
   }) async {
     if (!isConfigured) {
-      throw GrokException(
-        'Clé API xAI manquante — ajoutez XAI_API_KEY dans le fichier .env (voir README).',
+      throw GeminiException(
+        'Clé API Gemini manquante — ajoutez GEMINI_API_KEY dans le fichier .env (voir README).',
       );
     }
 
@@ -60,49 +61,61 @@ class GrokService {
     try {
       response = await http
           .post(
-            Uri.parse(_endpoint),
+            Uri.parse('$_baseUrl/$_model:generateContent'),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $_apiKey',
+              'x-goog-api-key': _apiKey,
             },
             body: jsonEncode({
-              'model': _model,
-              'messages': [
-                {'role': 'system', 'content': systemPrompt},
-                {'role': 'user', 'content': userPrompt},
+              'system_instruction': {
+                'parts': [
+                  {'text': systemPrompt},
+                ],
+              },
+              'contents': [
+                {
+                  'role': 'user',
+                  'parts': [
+                    {'text': userPrompt},
+                  ],
+                },
               ],
-              'response_format': {'type': 'json_object'},
-              'temperature': 0.4,
+              'generationConfig': {
+                'responseMimeType': 'application/json',
+                'temperature': 0.4,
+              },
             }),
           )
           .timeout(_timeout);
     } on SocketException {
-      throw GrokException(
+      throw GeminiException(
         'Pas de connexion internet — la génération de fiche nécessite une connexion.',
       );
     } on TimeoutException {
-      throw GrokException('Grok met trop de temps à répondre, réessayez.');
+      throw GeminiException('Gemini met trop de temps à répondre, réessayez.');
     } on http.ClientException {
-      throw GrokException('Impossible de contacter le serveur Grok.');
+      throw GeminiException('Impossible de contacter le serveur Gemini.');
     }
 
-    if (response.statusCode == 401) {
-      throw GrokException('Clé API xAI invalide ou expirée.');
+    if (response.statusCode == 400 || response.statusCode == 401) {
+      throw GeminiException(
+        'Clé API Gemini invalide ou expirée : ${_extractErrorMessage(response.bodyBytes) ?? 'vérifiez GEMINI_API_KEY.'}',
+      );
     }
     if (response.statusCode == 403) {
-      throw GrokException(
-        'Accès refusé par xAI : ${_extractErrorMessage(response.bodyBytes) ?? 'vérifiez les crédits/licence du compte sur console.x.ai.'}',
+      throw GeminiException(
+        'Accès refusé par Gemini : ${_extractErrorMessage(response.bodyBytes) ?? 'vérifiez les autorisations de la clé sur aistudio.google.com.'}',
       );
     }
     if (response.statusCode == 429) {
-      throw GrokException('Quota Grok atteint — réessayez plus tard.');
+      throw GeminiException('Quota Gemini atteint — réessayez plus tard.');
     }
     if (response.statusCode >= 500) {
-      throw GrokException('Le serveur Grok est indisponible, réessayez.');
+      throw GeminiException('Le serveur Gemini est indisponible, réessayez.');
     }
     if (response.statusCode != 200) {
       final detail = _extractErrorMessage(response.bodyBytes);
-      throw GrokException(
+      throw GeminiException(
         detail != null
             ? 'Échec de la génération : $detail'
             : 'Échec de la génération (code ${response.statusCode}).',
@@ -112,13 +125,14 @@ class GrokService {
     return _parseResponse(response.bodyBytes);
   }
 
-  /// xAI renvoie les erreurs sous la forme `{"code":"...","error":"message"}` :
+  /// Gemini renvoie les erreurs sous la forme `{"error":{"message":"..."}}` :
   /// on remonte ce message tel quel a l'enseignant plutot qu'un code HTTP nu.
   String? _extractErrorMessage(List<int> bodyBytes) {
     try {
       final decoded =
           jsonDecode(utf8.decode(bodyBytes)) as Map<String, dynamic>;
-      return decoded['error'] as String?;
+      final error = decoded['error'] as Map<String, dynamic>?;
+      return error?['message'] as String?;
     } catch (_) {
       return null;
     }
@@ -129,7 +143,8 @@ class GrokService {
     return '''
 Tu es un assistant pedagogique pour des enseignants du primaire/secondaire en Afrique de l'Ouest.
 Tu generes des fiches de cours claires, concretes et directement utilisables en classe.
-Reponds UNIQUEMENT en $langueTexte, et UNIQUEMENT avec un objet JSON valide, sans texte autour, avec exactement ces cles (toutes en texte libre, plusieurs phrases ou une liste a puces sous forme de texte) :
+Reponds UNIQUEMENT en $langueTexte, et UNIQUEMENT avec un objet JSON valide, sans texte autour, avec exactement ces cles (toutes en texte libre, plusieurs phrases ou une liste a puces sous forme de texte).
+N'utilise AUCUN symbole de mise en forme Markdown : pas de **gras**, pas de _italique_, pas de #titres, pas de `code`. Texte brut uniquement. Pour une liste, utilise des lignes commencant par "- " ou "1. ", sans aucun autre symbole.
 {
   "objectifs": "objectifs pedagogiques de la seance",
   "prerequis": "connaissances/notions que les eleves doivent deja maitriser",
@@ -169,11 +184,12 @@ Reponds UNIQUEMENT en $langueTexte, et UNIQUEMENT avec un objet JSON valide, san
     try {
       final decoded =
           jsonDecode(utf8.decode(bodyBytes)) as Map<String, dynamic>;
-      final content = decoded['choices'][0]['message']['content'] as String;
+      final content =
+          decoded['candidates'][0]['content']['parts'][0]['text'] as String;
       final ficheJson = jsonDecode(content) as Map<String, dynamic>;
       return FicheContenu.fromJson(ficheJson);
     } catch (_) {
-      throw GrokException('Réponse de Grok illisible, réessayez.');
+      throw GeminiException('Réponse de Gemini illisible, réessayez.');
     }
   }
 }

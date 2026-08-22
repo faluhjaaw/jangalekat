@@ -45,6 +45,16 @@ class NoteService {
     return _notes(classeId, eleveId).doc(id).set(note.toMap());
   }
 
+  Future<void> supprimer(
+    String classeId,
+    String eleveId, {
+    required String matiere,
+    required String periode,
+  }) {
+    final id = Note.idFor(matiere, periode);
+    return _notes(classeId, eleveId).doc(id).delete();
+  }
+
   /// Toutes les notes d'un eleve pour une periode (une lecture par matiere de
   /// la classe, via l'id deterministe : pas de requete `where` necessaire).
   /// `matieres` vient de `Classe.matieres` : chaque classe a ses propres
